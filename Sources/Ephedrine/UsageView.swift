@@ -17,6 +17,7 @@ final class UsageView: NSView {
     private var rows: [Row] = []
     private var status = ""
     private var message: String? = "Loading…"
+    private var hint: String?
     private var hovered = false
 
     private static let topPad: CGFloat = 4
@@ -26,22 +27,40 @@ final class UsageView: NSView {
     private static let rowH: CGFloat = 25
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: Self.height(rows: 0)))
+        super.init(frame: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: Self.topPad + Self.headerH + 23))
         setAccessibilityRole(.button)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
 
-    private static func height(rows: Int) -> CGFloat {
-        topPad + headerH + (rows == 0 ? 17 : 5 + CGFloat(rows) * rowH + CGFloat(rows - 1) * rowGap) + 6
+    private static var textWidth: CGFloat { MenuMetrics.width - 2 * MenuMetrics.inset }
+    private static let hintFont = NSFont.systemFont(ofSize: 11)
+    private static let messageFont = NSFont.systemFont(ofSize: 12)
+
+    private static func wrappedHeight(_ s: String?, _ font: NSFont) -> CGFloat {
+        guard let s = s, !s.isEmpty else { return 0 }
+        return ceil(NSAttributedString(string: s, attributes: [.font: font])
+            .boundingRect(with: NSSize(width: textWidth, height: 1000), options: [.usesLineFragmentOrigin]).height)
     }
 
-    func update(rows: [Row], status: String, message: String?) {
-        self.rows = rows; self.status = status; self.message = message
-        let h = Self.height(rows: message == nil ? rows.count : 0)
+    private func layoutHeight() -> CGFloat {
+        var h = Self.topPad + Self.headerH
+        if let m = message {
+            h += 1 + Self.wrappedHeight(m, Self.messageFont)
+        } else if !rows.isEmpty {
+            h += 5 + CGFloat(rows.count) * Self.rowH + CGFloat(rows.count - 1) * Self.rowGap
+        }
+        if let hnt = hint { h += 4 + Self.wrappedHeight(hnt, Self.hintFont) }
+        return h + 6
+    }
+
+    func update(rows: [Row], status: String, message: String?, hint: String? = nil) {
+        self.rows = rows; self.status = status; self.message = message; self.hint = hint
+        let h = layoutHeight()
         if frame.height != h { setFrameSize(NSSize(width: MenuMetrics.width, height: h)) }
-        setAccessibilityLabel(message ?? rows.map { "\($0.label) \($0.detail)" }.joined(separator: ", "))
+        let body = message ?? rows.map { "\($0.label) \($0.detail)" }.joined(separator: ", ")
+        setAccessibilityLabel([body, hint].compactMap { $0 }.joined(separator: ". "))
         needsDisplay = true
     }
 
@@ -84,8 +103,15 @@ final class UsageView: NSView {
         }
 
         let top0 = Self.topPad + Self.headerH
+        func wrapped(_ s: String, _ font: NSFont, _ color: NSColor, at y: CGFloat) -> CGFloat {
+            let a = NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color])
+            let r = NSRect(x: x, y: y, width: w, height: Self.wrappedHeight(s, font))
+            a.draw(with: r, options: [.usesLineFragmentOrigin])
+            return r.maxY
+        }
         if let m = message {
-            text(m, size: 12, color: .secondaryLabelColor).draw(at: NSPoint(x: x, y: top0 + 1))
+            let bottom = wrapped(m, Self.messageFont, .secondaryLabelColor, at: top0 + 1)
+            if let hnt = hint { _ = wrapped(hnt, Self.hintFont, .tertiaryLabelColor, at: bottom + 4) }
             return
         }
         for (i, r) in rows.enumerated() {
@@ -100,9 +126,13 @@ final class UsageView: NSView {
             let frac = CGFloat(min(max(r.percent, 0), 100) / 100)
             if frac > 0 {
                 var fill = track; fill.size.width = max(track.height, track.width * frac)
-                barColor(r.level).setFill()
+                barColor(r.level).withAlphaComponent(hint == nil ? 1 : 0.55).setFill()   // faded while stale
                 NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
             }
+        }
+        if let hnt = hint, !rows.isEmpty {
+            let y = top0 + 5 + CGFloat(rows.count) * Self.rowH + CGFloat(rows.count - 1) * Self.rowGap + 4
+            _ = wrapped(hnt, Self.hintFont, .tertiaryLabelColor, at: y)
         }
     }
 

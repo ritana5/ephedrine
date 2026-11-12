@@ -16,7 +16,8 @@ let pausedPidsPath = "\(home)/.claude/ephedrine/paused-pids"   // plain pid list
 let leaseFallback: TimeInterval = 300   // used only if a marker file can't be parsed
 let tickInterval: TimeInterval = 3
 let preSleepWarning: TimeInterval = 10  // grace given after the notification before sleeping
-let usageRefresh: TimeInterval = 180    // how often to refetch Claude usage
+let usageRefresh: TimeInterval = 300    // how often to refetch Claude usage (the endpoint rate-limits hard)
+let usageMenuRefresh: TimeInterval = 90 // opening the menu refetches numbers older than this
 let updateCheckEvery: TimeInterval = 6 * 3600
 let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
 
@@ -211,10 +212,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
     var cmuxPasswordNotice = UnreadableNotice()      // main thread
     var networkBackAt: Date?                         // main thread: the last outage's end (ScanFlags)
-    var usageError = false
+    var usageProblem: UsageProblem?                 // why the numbers aren't fresh; nil when they are
+    var usageError: Bool { usageProblem != nil }
     var usageFetching = false
-    var lastUsageFetch: Date?
+    var lastUsageFetch: Date?                        // last attempt
+    var usageUpdatedAt: Date?                        // last success
+    var usageNextFetch: Date?                        // no automatic fetch before this (backoff)
+    var usageFailures = 0
     var usageView: UsageView?
+    lazy var usageClient = ClaudeUsageClient(appVersion: appVersion)
+    var iconBaseTitle = ""                           // the menu bar title before the usage badge
     let settingsWindow = SettingsWindowController()
     let hotkeys = HotkeyCenter()                     // global shortcuts (Settings › Shortcuts)
     var menuOpenedAt: TimeInterval?                  // uptimes of the status menu opening and closing
@@ -536,7 +543,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         refreshIcon(active: keepAwake, title: title)
 
         // Usage reads the keychain, so not before the setup screen has explained that.
-        if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > usageRefresh) { fetchUsage() }
+        if settings.setupDone && usageDue(maxAge: usageRefresh) { fetchUsage() }
         if settings.checkForUpdates && fullyAwake
             && (lastUpdateCheck == nil || Date().timeIntervalSince(lastUpdateCheck!) > updateCheckEvery) { checkForUpdates() }
 
@@ -1255,43 +1262,46 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if let s = latestRelease?.url, let url = URL(string: s) { NSWorkspace.shared.open(url) }
     }
 
-    func fetchUsage() {
+    /// Time for an automatic fetch: never before the backoff ends, and only once the numbers are `maxAge` old.
+    func usageDue(maxAge: TimeInterval, now: Date = Date()) -> Bool {
+        if let next = usageNextFetch, now < next { return false }
+        guard let last = lastUsageFetch else { return true }
+        return now.timeIntervalSince(last) > maxAge
+    }
+
+    /// `force` (a click, a settings change) skips the backoff, except while
+    /// Anthropic has asked to wait: asking again then only extends the wait.
+    func fetchUsage(force: Bool = false) {
         guard !usageFetching else { return }
+        let now = Date()
+        if case .rateLimited(let until)? = usageProblem, until > now { updateUsageView(); return }
+        if !force, let next = usageNextFetch, now < next { return }
         usageFetching = true
-        lastUsageFetch = Date()
+        lastUsageFetch = now
         updateUsageView()
-        func finish(_ limits: [UsageLimit]?) {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.usageFetching = false
-                if let limits = limits, !limits.isEmpty {
-                    self.usageLimits = limits
-                    self.usageError = false
-                    self.maybeAlertUsage()
-                } else {
-                    self.usageError = true   // keep showing the last good numbers, if any
-                }
-                self.updateUsageView()
+        usageClient.fetch(consecutiveFailures: usageFailures) { [weak self] result in
+            guard let self = self else { return }
+            self.usageFetching = false
+            let now = Date()
+            switch result {
+            case .success(let limits):
+                if let p = self.usageProblem { logLine("usage: working again after \(p.kind)") }
+                self.usageLimits = limits
+                self.usageProblem = nil
+                self.usageFailures = 0
+                self.usageUpdatedAt = now
+                self.usageNextFetch = nil
+                self.maybeAlertUsage()
+            case .failure(let p):
+                if self.usageProblem?.kind != p.kind { logLine("usage: \(p.message)") }
+                self.usageProblem = p
+                self.usageFailures += 1
+                self.usageNextFetch = now.addingTimeInterval(usageRetryDelay(p, consecutiveFailures: self.usageFailures, now: now))
+                // Old numbers stay on screen (marked stale) unless the sign-in itself is gone.
+                if p.needsUser && p != .keychainDenied { self.usageLimits = [] }
             }
-        }
-        DispatchQueue.global(qos: .utility).async {
-            let creds = runTool("/usr/bin/security",
-                                ["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-            guard let data = creds.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return finish(nil) }
-            let oauth = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
-            guard let token = oauth["accessToken"] as? String, !token.isEmpty,
-                  let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return finish(nil) }
-            var req = URLRequest(url: url)
-            req.timeoutInterval = 20
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-            URLSession.shared.dataTask(with: req) { d, resp, _ in
-                let httpOK = (resp as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
-                guard httpOK, let d = d,
-                      let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return finish(nil) }
-                finish(parseUsageLimits(j))
-            }.resume()
+            self.updateUsageView()
+            self.refreshIcon(active: self.iconActive, title: self.iconBaseTitle)
         }
     }
 
@@ -1299,29 +1309,47 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         for l in usageAlerts.check(usageLimits, threshold: settings.usageAlert) {
             let c = UNMutableNotificationContent()
             c.title = "Claude usage"
-            c.body = String(format: "%@ is at %.0f%%. Resets %@.", l.label, l.percent, clockStr(l.resetsAt))
+            c.body = String(format: "%@ is at %.0f%%. ", l.label, l.percent)
+                + (resetPhrase(l.resetsAt, now: Date()).map { $0.prefix(1).uppercased() + $0.dropFirst() + "." } ?? "")
             UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: "ka_usage_\(l.key)", content: c, trigger: nil))
             logLine("usage alert: \(l.label) \(Int(l.percent))%")
         }
     }
 
+    /// One line on how the meter is doing, for Settings and the setup screen.
+    var usageStatusLine: String {
+        if usageFetching && usageLimits.isEmpty { return "Checking…" }
+        if let p = usageProblem { return p.message + (p.hint.map { ". " + $0 } ?? "") }
+        if let u = usageUpdatedAt { return "Working, " + updatedPhrase(u, now: Date()) }
+        return lastUsageFetch == nil ? "Not checked yet" : "Checking…"
+    }
+
     func updateUsageView() {
         guard let uv = usageView else { return }
+        let now = Date()
         let rows = usageLimits.map {
             UsageView.Row(label: $0.label, percent: $0.percent,
                           detail: String(format: "%.0f%%", $0.percent)
-                              + ($0.resetsAt.map { " · resets \(clockStr($0))" } ?? ""),
+                              + (resetPhrase($0.resetsAt, now: now).map { " · \($0)" } ?? ""),
                           level: usageLevel(percent: $0.percent, severity: $0.severity))
         }
         let status: String
         if usageFetching { status = "refreshing…" }
-        else if usageError { status = rows.isEmpty ? "" : "couldn't refresh · click to retry" }
+        else if case .rateLimited(let until)? = usageProblem { status = "retry \(clockStr(until))" }
+        else if usageProblem != nil { status = "click to retry" }
+        else if let u = usageUpdatedAt { status = updatedPhrase(u, now: now) }
         else { status = "click to refresh" }
-        uv.update(rows: rows, status: status,
-                  message: rows.isEmpty ? (usageError ? "Unavailable. Open Claude Code, or allow keychain access"
-                                                      : lastUsageFetch == nil ? "Click to show (reads Claude Code's sign-in)"
-                                                      : "Loading…") : nil)
+
+        var message: String?, hint: String?
+        if rows.isEmpty {
+            if let p = usageProblem { message = p.message; hint = p.hint }
+            else if lastUsageFetch == nil { message = "Click to show"; hint = "Reads Claude Code's sign-in from the keychain." }
+            else { message = "Loading…" }
+        } else if let p = usageProblem {
+            hint = "Couldn't refresh: " + p.message.prefix(1).lowercased() + p.message.dropFirst() + "."
+        }
+        uv.update(rows: rows, status: status, message: message, hint: hint)
     }
 
     // MARK: menu bar icon
@@ -1351,8 +1379,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if awakeIcons[style] == nil { awakeIcons[style] = menuBarAwakeIcon(style: style) }
             btn.image = awakeIcons[style]
         }
-        btn.title = title.isEmpty ? "" : " " + title
-        btn.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        iconBaseTitle = title
+        let full = [title, settings.menuBarUsage.badge(usageLimits) ?? ""].filter { !$0.isEmpty }.joined(separator: "  ")
+        btn.title = full.isEmpty ? "" : " " + full
+        btn.imagePosition = full.isEmpty ? .imageOnly : .imageLeading
     }
 
     // MARK: menu
@@ -1508,7 +1538,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         durationPanel.close()
-        if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > 60) { fetchUsage() }
+        if settings.setupDone && usageDue(maxAge: usageMenuRefresh) { fetchUsage() }
         refreshDisplaySleepIfStale()
         menu.removeAllItems()
         addStatusAndUsage(to: menu)
@@ -1616,7 +1646,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let uv = UsageView()
         usageView = uv
         updateUsageView()
-        uv.onClick = { [weak self] in self?.fetchUsage() }
+        uv.onClick = { [weak self] in self?.fetchUsage(force: true) }
         let uItem = NSMenuItem()
         uItem.view = uv
         menu.addItem(uItem)
@@ -1794,7 +1824,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             logLine("update check \(settings.checkForUpdates ? "on" : "off")")
         case "usageAlert":
             usageAlerts = UsageAlertTracker()
-            fetchUsage()
+            fetchUsage(force: true)
+            return
+        case "menuBarUsage":
+            refreshIcon(active: iconActive, title: iconBaseTitle)
             return
         default: break
         }
