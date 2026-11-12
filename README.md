@@ -67,6 +67,15 @@ Optional, for Terminal.app and cmux.
 
 Your Claude session and weekly limits show in the menu, with an alert at a level you pick, once per limit until it resets.
 
+- Each bar shows how full the limit is and when it resets ("resets in 2h 14m").
+- Optionally shows a percentage next to the menu bar icon: the session limit, or whichever limit is closest to full (Settings → General → Menu bar icon).
+- Keeps working when Claude Code hasn't run for a while. Claude Code's access token only lasts a few hours, so when it has expired Ephedrine renews it the way Claude Code does and saves it back where Claude Code keeps it.
+- Reads the sign-in from the keychain or from `~/.claude/.credentials.json`, whichever has a usable one.
+- Backs off when Anthropic rate-limits the endpoint, and keeps showing the last numbers (faded) until it can refresh.
+- When it can't show anything, it says why and what to do: not signed in, a sign-in that has expired, a token that can't read usage, keychain access denied, or offline.
+
+The meter needs the Claude Code command-line tool signed in with `/login`. The Claude desktop app keeps its own sign-in, which other apps can't read, so if you only use the desktop app, install Claude Code, run `claude`, and type `/login` once. Tokens from `claude setup-token` can't read usage.
+
 ### Battery and heat safety
 
 - On battery, Ephedrine stops keeping the Mac awake for anything at 30, 20 or 10% (you pick, or only on the charger) until you plug in, so it never runs the battery flat.
@@ -155,7 +164,7 @@ Nothing is requested until you click its button on the setup screen. You can reo
 |---|---|
 | Notifications | The warning before it sleeps the Mac. Without it the Mac still sleeps on schedule, just without the heads-up. |
 | Control Terminal | Only the Terminal helpers use this. It reads the text in your Terminal.app tabs to see Claude's status, and uses `do script` to type `continue` into a tab that stalled. |
-| Keychain | The usage meter reads Claude Code's sign-in (`Claude Code-credentials`) and calls `api.anthropic.com/api/oauth/usage`, the same numbers `/usage` shows. That endpoint isn't documented, so it could change. The hotspot and cmux passwords you type into Ephedrine are saved here too, in items of Ephedrine's own. |
+| Keychain | The usage meter reads Claude Code's sign-in (`Claude Code-credentials`, or `~/.claude/.credentials.json`) and calls `api.anthropic.com/api/oauth/usage`, the same numbers `/usage` shows. When the access token has expired, it renews it at Anthropic's token endpoint and writes the new tokens back into the same item (through `security`, as Claude Code does), keeping everything else in it. That endpoint isn't documented, so it could change. The hotspot and cmux passwords you type into Ephedrine are saved here too, in items of Ephedrine's own. |
 | Location | Only the hotspot feature, and only when you save a hotspot. macOS hides Wi-Fi names from apps until Location is allowed. Ephedrine never reads where you are. |
 | Admin password, once | Only lid-closed mode. See [Lid mode and the sudo rule](#lid-mode-and-the-sudo-rule). |
 

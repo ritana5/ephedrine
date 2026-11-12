@@ -254,6 +254,12 @@ struct GeneralPane: View {
                             }
                         }
                     }
+                    SettingsRow("Show Claude usage", subtitle: "A percentage next to the icon: the 5-hour session, or whichever limit is closest to full.") {
+                        Picker("Show Claude usage", selection: $settings.menuBarUsage) {
+                            ForEach(MenuBarUsage.allCases, id: \.self) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
                     SettingsNote("Color by state: orange while it keeps the Mac awake, blue during a lid session you started, purple while you're away. Idle stays plain.")
                 }
             }
@@ -357,6 +363,10 @@ struct ClaudePane: View {
                     SettingsRow("Continue after a usage limit resets",
                                 subtitle: "When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.") {
                         Toggle("Continue after a usage limit resets", isOn: $settings.autoResumeLimit).toggleStyle(ClayToggleStyle())
+                    }
+                    SettingsRow("Usage meter", subtitle: controller.usageStatusLine) {
+                        Button(controller.usageFetching ? "Checking…" : "Refresh") { controller.fetchUsage(force: true) }
+                            .disabled(controller.usageFetching)
                     }
                     SettingsRow("Usage alert", subtitle: "Get a notification when any limit (session, weekly, or per-model) reaches this level.") {
                         Picker("Usage alert", selection: $settings.usageAlert) {

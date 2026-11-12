@@ -118,10 +118,11 @@ struct SetupView: View {
                 }
                 Section("Optional") {
                     SetupRow(symbol: "chart.bar", title: "Claude usage in the menu",
-                             detail: "Shows your session and weekly limits. Reads Claude Code's sign-in from the keychain; click Always Allow when macOS asks.") {
-                        if !controller.usageLimits.isEmpty { Allowed("Showing") }
+                             detail: controller.usageProblem.map { [$0.message, $0.hint].compactMap { $0 }.joined(separator: ". ") }
+                                ?? "Shows your session and weekly limits. Reads Claude Code's sign-in from the keychain; click Always Allow when macOS asks.") {
+                        if !controller.usageLimits.isEmpty && controller.usageProblem == nil { Allowed("Showing") }
                         else if controller.usageFetching { Text("Checking…").foregroundStyle(.secondary) }
-                        else { Button(controller.lastUsageFetch == nil ? "Allow" : "Try again") { controller.fetchUsage() } }
+                        else { Button(controller.lastUsageFetch == nil ? "Allow" : "Try again") { controller.fetchUsage(force: true) } }
                     }
                     SetupRow(symbol: "laptopcomputer", title: "Lid-closed mode",
                              detail: "Lets Claude keep working with the lid shut. Adds a one-line sudo rule that only allows “pmset disablesleep” and Low Power Mode. Asks for your password once.") {

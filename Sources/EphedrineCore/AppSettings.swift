@@ -56,6 +56,8 @@ public final class AppSettings: ObservableObject {
     /// The first-run setup screen was finished (or skipped).
     @Published public var setupDone: Bool { didSet { save(setupDone, "setupDone") } }
     @Published public var menuBarIconStyle: MenuBarIconStyle { didSet { save(menuBarIconStyle.rawValue, "menuBarIconStyle") } }
+    /// A Claude usage percentage next to the menu bar icon.
+    @Published public var menuBarUsage: MenuBarUsage { didSet { save(menuBarUsage.rawValue, "menuBarUsage") } }
     /// User additions to the apps "I'm leaving" never pauses (bundle ids).
     @Published public var awayKeepRunning: [String] { didSet { save(awayKeepRunning, "awayKeepRunning") } }
     /// Apps "I'm leaving" and the lid pause stop even if they're on a keep-running list (bundle ids).
@@ -107,6 +109,7 @@ public final class AppSettings: ObservableObject {
         checkForUpdates = bool("checkForUpdates", true)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
+        menuBarUsage = defaults.string(forKey: "menuBarUsage").flatMap(MenuBarUsage.init(rawValue:)) ?? .off
         // Drop duplicates (the old `defaults write … -array-add` tip could add some), keep order.
         var seen = Set<String>()
         awayKeepRunning = (defaults.stringArray(forKey: "awayKeepRunning") ?? []).filter { seen.insert($0).inserted }
